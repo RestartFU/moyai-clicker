@@ -155,7 +155,7 @@ func runUI(baseCfg config) error {
 	logScroll := container.NewVScroll(logGrid)
 	logScroll.SetMinSize(fyne.NewSize(0, 150))
 
-	const maxUILogLines = 220
+	const maxUILogLines = 50
 	var logMu sync.Mutex
 	logLines := make([]string, 0, maxUILogLines)
 	appendLogLine := func(line string) {
