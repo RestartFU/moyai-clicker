@@ -1,3 +1,5 @@
+//go:build linux
+
 package linuxinput
 
 import (
@@ -21,6 +23,18 @@ func ParseCode(value string) (uint16, error) {
 	if code, ok := evdev.KEYFromString[raw]; ok {
 		return uint16(code), nil
 	}
+	if strings.Contains(raw, "/") {
+		parts := strings.Split(raw, "/")
+		for i := len(parts) - 1; i >= 0; i-- {
+			part := strings.TrimSpace(parts[i])
+			if part == "" {
+				continue
+			}
+			if code, ok := evdev.KEYFromString[part]; ok {
+				return uint16(code), nil
+			}
+		}
+	}
 
 	parsed, err := strconv.ParseInt(raw, 0, 32)
 	if err != nil {
@@ -35,6 +49,16 @@ func ParseCode(value string) (uint16, error) {
 func FormatCodeName(code uint16) string {
 	name := evdev.CodeName(evdev.EV_KEY, evdev.EvCode(code))
 	if name != "" {
+		if strings.Contains(name, "/") {
+			parts := strings.Split(name, "/")
+			for i := len(parts) - 1; i >= 0; i-- {
+				part := strings.TrimSpace(parts[i])
+				if strings.HasPrefix(part, "KEY_") || strings.HasPrefix(part, "BTN_") {
+					return part
+				}
+			}
+			return strings.TrimSpace(parts[len(parts)-1])
+		}
 		return name
 	}
 	return strconv.Itoa(int(code))

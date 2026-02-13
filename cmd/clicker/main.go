@@ -8,15 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
 	"syscall"
-	"time"
-
-	"clicker/internal/adapters/linuxinput"
 )
 
 type config struct {
@@ -24,6 +20,7 @@ type config struct {
 	toggleCode   uint16
 	triggerRaw   string
 	toggleRaw    string
+	backend      string
 	devicePath   string
 	cps          float64
 	downMS       float64
@@ -102,37 +99,6 @@ func parseLogLevel(value string) (slog.Level, error) {
 	}
 }
 
-func parseTriggerCode(value string) (uint16, error) {
-	return linuxinput.ParseCode(value)
-}
-
-func captureNextCode(devicePath string, timeout time.Duration) (uint16, error) {
-	return linuxinput.CaptureNextKeyCode(devicePath, timeout)
-}
-
-func formatCodeName(code uint16) string {
-	return linuxinput.FormatCodeName(code)
-}
-
-func listInputDevices() error {
-	devices, err := linuxinput.ListInputDevices()
-	if err != nil {
-		return err
-	}
-	for _, dev := range devices {
-		virtualTag := "physical"
-		if dev.IsVirtual {
-			virtualTag = "virtual"
-		}
-		pointerTag := "non-pointer"
-		if dev.IsPointer {
-			pointerTag = "pointer"
-		}
-		fmt.Printf("%s: %s [%s, %s]\n", dev.Path, dev.Name, virtualTag, pointerTag)
-	}
-	return nil
-}
-
 func parseConfig(args []string) (config, error) {
 	cfg := config{startEnabled: true}
 	flags := flag.NewFlagSet("clicker", flag.ContinueOnError)
@@ -140,12 +106,14 @@ func parseConfig(args []string) (config, error) {
 
 	var triggerRaw string
 	var toggleRaw string
+	var backendRaw string
 	var logLevelRaw string
 	var noGrab bool
 	var cliMode bool
 
 	flags.StringVar(&triggerRaw, "trigger", "BTN_LEFT", "Trigger key/button code name (default: BTN_LEFT). Example: BTN_SIDE, KEY_LEFTALT.")
 	flags.StringVar(&toggleRaw, "toggle", "BTN_EXTRA", "Enable/disable autoclicker when pressed (default: BTN_EXTRA, usually mouse button 5).")
+	flags.StringVar(&backendRaw, "backend", "auto", "Input backend. Linux: auto|wayland|x11. Windows: auto|windows.")
 	flags.StringVar(&cfg.devicePath, "device", "", "Input event device path to listen on, e.g. /dev/input/event4. Auto-detected if omitted.")
 	flags.Float64Var(&cfg.cps, "cps", 16.0, "Clicks per second while held.")
 	flags.Float64Var(&cfg.downMS, "down-ms", 10.0, "How long each synthetic click stays down in ms (default: 10).")
@@ -185,10 +153,14 @@ func parseConfig(args []string) (config, error) {
 	}
 
 	if !cfg.grabDevices && !noGrab {
-		cfg.grabDevices = triggerCode == linuxinput.CodeBTNLeft
+		cfg.grabDevices = defaultGrabForTrigger(triggerCode)
 	}
 
 	parsedLevel, err := parseLogLevel(logLevelRaw)
+	if err != nil {
+		return cfg, err
+	}
+	backendChoice, err := parseBackendChoice(backendRaw)
 	if err != nil {
 		return cfg, err
 	}
@@ -197,68 +169,13 @@ func parseConfig(args []string) (config, error) {
 	cfg.toggleCode = toggleCode
 	cfg.triggerRaw = triggerRaw
 	cfg.toggleRaw = toggleRaw
+	cfg.backend = backendChoice
 	cfg.logLevel = parsedLevel
 	return cfg, nil
 }
 
 func isPermissionError(err error) bool {
 	return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)
-}
-
-func startClickerFromConfig(cfg config, logger *slog.Logger) (*linuxinput.Runtime, error) {
-	selection, err := linuxinput.OpenSourceSelection(cfg.devicePath, cfg.triggerCode, cfg.toggleCode)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, dev := range selection.Devices {
-		name, _ := dev.Name()
-		logger.Info("Using source device", "path", dev.Path(), "name", name)
-	}
-
-	clickDown := time.Duration(math.Max(0, cfg.downMS) * float64(time.Millisecond))
-	runtime, err := linuxinput.NewRuntime(
-		selection,
-		linuxinput.RuntimeConfig{
-			TriggerCode:  cfg.triggerCode,
-			ToggleCode:   cfg.toggleCode,
-			CPS:          cfg.cps,
-			ClickDown:    clickDown,
-			StartEnabled: cfg.startEnabled,
-			GrabDevices:  cfg.grabDevices,
-		},
-		logger,
-	)
-	if err != nil {
-		for _, dev := range selection.Devices {
-			_ = dev.Close()
-		}
-		return nil, err
-	}
-
-	if err := runtime.Start(); err != nil {
-		runtime.Stop()
-		return nil, err
-	}
-
-	logger.Info("Trigger", "name", formatCodeName(cfg.triggerCode), "code", cfg.triggerCode)
-	logger.Info("Toggle", "name", formatCodeName(cfg.toggleCode), "code", cfg.toggleCode)
-	logger.Info("Rate", "cps", cfg.cps)
-	if runtime.GrabEnabled() {
-		logger.Info("Grab mode enabled")
-	} else {
-		logger.Info("Grab mode disabled")
-	}
-	if cfg.triggerCode == linuxinput.CodeBTNLeft && !runtime.GrabEnabled() {
-		logger.Warn("BTN_LEFT trigger without grabbing may be ignored by Wayland; use --grab")
-	}
-	if cfg.startEnabled {
-		logger.Info("Initial state enabled (press toggle to disable/enable)")
-	} else {
-		logger.Info("Initial state disabled (press toggle to enable/disable)")
-	}
-	logger.Info("Hold trigger to autoclick left mouse button. Press Ctrl+C to stop")
-	return runtime, nil
 }
 
 func run(args []string, stderr io.Writer) int {
@@ -272,7 +189,7 @@ func run(args []string, stderr io.Writer) int {
 	}
 
 	if cfg.listDevices {
-		if err := listInputDevices(); err != nil {
+		if err := listInputDevices(cfg.backend); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -291,7 +208,7 @@ func run(args []string, stderr io.Writer) int {
 	runtime, err := startClickerFromConfig(cfg, logger)
 	if err != nil {
 		if isPermissionError(err) {
-			fmt.Fprintln(stderr, "Permission denied opening input/uinput. Run as root or set udev rules for /dev/input and /dev/uinput.")
+			fmt.Fprintln(stderr, permissionDeniedHint())
 			return 1
 		}
 		fmt.Fprintln(stderr, err)

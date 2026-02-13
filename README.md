@@ -1,6 +1,6 @@
-# clicker
+# Moyai Clicker
 
-A minimal hold-clicker for Linux Wayland compositors.
+A minimal hold-clicker for Linux and Windows.
 Hold your trigger button/key to autoclick, and use a toggle keybind to pause/resume.
 
 ## Build

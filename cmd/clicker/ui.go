@@ -541,7 +541,7 @@ func runUI(baseCfg config) error {
 				setInitializingUI(false)
 				if err != nil {
 					if isPermissionError(err) {
-						errorText.Text = "permission denied for /dev/input or /dev/uinput (run as root or set udev rules)"
+						errorText.Text = permissionDeniedHint()
 					} else {
 						errorText.Text = err.Error()
 					}
@@ -650,7 +650,7 @@ func runUI(baseCfg config) error {
 			if err != nil {
 				capturedFromRuntime = false
 				stopRuntime()
-				code, err = captureNextCode("", 10*time.Second)
+				code, err = captureNextCode(cfg.backend, "", 10*time.Second)
 				if err != nil {
 					_ = startRuntime(prevCfg)
 					return err
@@ -722,7 +722,7 @@ func runUI(baseCfg config) error {
 				capturedFromRuntime = false
 				// Fallback to global capture when runtime source set does not see desired key/button.
 				stopRuntime()
-				code, err = captureNextCode("", 10*time.Second)
+				code, err = captureNextCode(cfg.backend, "", 10*time.Second)
 				if err != nil {
 					_ = startRuntime(prevCfg)
 					return err
