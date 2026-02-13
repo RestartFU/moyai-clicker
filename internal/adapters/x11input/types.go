@@ -7,6 +7,7 @@ type RuntimeConfig struct {
 	ToggleCode   uint16
 	CPS          float64
 	ClickDown    time.Duration
+	JitterPixels int
 	StartEnabled bool
 }
 

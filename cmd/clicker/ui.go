@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"image/color"
 	"math"
@@ -25,6 +26,7 @@ type clickerRuntime interface {
 	SetEnabled(enabled bool)
 	IsEnabled() bool
 	SetCPS(cps float64) error
+	SetJitter(pixels int) error
 	SetTriggerCode(code uint16)
 	SetToggleCode(code uint16)
 	CaptureNextKeyCode(timeout time.Duration) (uint16, error)
@@ -98,9 +100,9 @@ func (t *clickerTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
 func (t *clickerTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNamePadding:
-		return 10
+		return 8
 	case theme.SizeNameInnerPadding:
-		return 10
+		return 8
 	case theme.SizeNameInputRadius:
 		return 8
 	}
@@ -243,7 +245,8 @@ func runUI(baseCfg config) error {
 	fApp.Settings().SetTheme(newClickerTheme())
 
 	window := fApp.NewWindow("Auto-Clicker")
-	window.Resize(fyne.NewSize(760, 560))
+	window.Resize(fyne.NewSize(760, 470))
+	window.SetFixedSize(true)
 	window.CenterOnScreen()
 
 	clamp := func(v, min, max float64) float64 {
@@ -261,6 +264,7 @@ func runUI(baseCfg config) error {
 
 	minDefault := math.Max(1, baseCfg.cps-4)
 	maxDefault := math.Max(minDefault, baseCfg.cps)
+	jitterDefault := clamp(float64(baseCfg.jitter), 0, 12)
 
 	triggerRaw := strings.TrimSpace(baseCfg.triggerRaw)
 	if triggerRaw == "" {
@@ -283,6 +287,9 @@ func runUI(baseCfg config) error {
 		}
 		if maxDefault < minDefault {
 			maxDefault = minDefault
+		}
+		if stored.Jitter >= 0 {
+			jitterDefault = clamp(float64(stored.Jitter), 0, 12)
 		}
 		if value := strings.TrimSpace(stored.Trigger); value != "" {
 			if _, parseErr := parseTriggerCode(value); parseErr == nil {
@@ -311,15 +318,25 @@ func runUI(baseCfg config) error {
 	maxSlider.Step = 0
 	maxSlider.SetValue(maxDefault)
 
-	minText := canvas.NewText("", nil)
-	maxText := canvas.NewText("", nil)
-	updateMinMaxText := func() {
-		minText.Text = fmt.Sprintf("Min CPS: %.2f", minSlider.Value)
-		minText.Refresh()
-		maxText.Text = fmt.Sprintf("Max CPS: %.2f", maxSlider.Value)
-		maxText.Refresh()
+	jitterSlider := widget.NewSlider(0, 12)
+	jitterSlider.Step = 0
+	jitterSlider.SetValue(jitterDefault)
+
+	minValue := widget.NewLabel("")
+	maxValue := widget.NewLabel("")
+	jitterValue := widget.NewLabel("")
+	minValue.Alignment = fyne.TextAlignTrailing
+	maxValue.Alignment = fyne.TextAlignTrailing
+	jitterValue.Alignment = fyne.TextAlignTrailing
+	minValue.TextStyle = fyne.TextStyle{Bold: true}
+	maxValue.TextStyle = fyne.TextStyle{Bold: true}
+	jitterValue.TextStyle = fyne.TextStyle{Bold: true}
+	updateControlText := func() {
+		minValue.SetText(fmt.Sprintf("%.2f", minSlider.Value))
+		maxValue.SetText(fmt.Sprintf("%.2f", maxSlider.Value))
+		jitterValue.SetText(fmt.Sprintf("%.2f px", jitterSlider.Value))
 	}
-	updateMinMaxText()
+	updateControlText()
 
 	persistUISettings := func() {}
 
@@ -327,14 +344,14 @@ func runUI(baseCfg config) error {
 		if v > maxSlider.Value {
 			maxSlider.SetValue(v)
 		}
-		updateMinMaxText()
+		updateControlText()
 		persistUISettings()
 	}
 	maxSlider.OnChanged = func(v float64) {
 		if v < minSlider.Value {
 			minSlider.SetValue(v)
 		}
-		updateMinMaxText()
+		updateControlText()
 		persistUISettings()
 	}
 
@@ -346,7 +363,8 @@ func runUI(baseCfg config) error {
 	if settingsLoadWarning != "" {
 		errorText.Text = settingsLoadWarning
 	}
-	currentCPSText := canvas.NewText("Current CPS: -", nil)
+	currentCPSText := widget.NewLabel("Current CPS: -")
+	currentCPSText.TextStyle = fyne.TextStyle{Bold: true}
 	logGrid := widget.NewTextGrid()
 	logGrid.SetText("")
 	logScroll := container.NewVScroll(logGrid)
@@ -422,6 +440,22 @@ func runUI(baseCfg config) error {
 		stateMu.Unlock()
 	}
 
+	jitterSlider.OnChanged = func(v float64) {
+		updateControlText()
+		jitterPixels := int(math.Round(v))
+		clicker, cfg, _ := getState()
+		cfg.jitter = jitterPixels
+		setCurrentCfg(cfg)
+		if clicker != nil {
+			if err := clicker.SetJitter(jitterPixels); err != nil {
+				errorText.Text = err.Error()
+				errorText.Refresh()
+				appendLogLine("ERROR " + err.Error())
+			}
+		}
+		persistUISettings()
+	}
+
 	setInitializingUI := func(v bool) {
 		if v {
 			initProgress.Show()
@@ -471,8 +505,7 @@ func runUI(baseCfg config) error {
 				return
 			}
 			fyne.Do(func() {
-				currentCPSText.Text = fmt.Sprintf("Current CPS: %.2f", cps)
-				currentCPSText.Refresh()
+				currentCPSText.SetText(fmt.Sprintf("Current CPS: %.2f", cps))
 			})
 		}
 
@@ -540,9 +573,12 @@ func runUI(baseCfg config) error {
 				setInitializing(false)
 				setInitializingUI(false)
 				if err != nil {
-					if isPermissionError(err) {
+					switch {
+					case isPermissionError(err):
 						errorText.Text = permissionDeniedHint()
-					} else {
+					case errors.Is(err, syscall.EBUSY) || strings.Contains(strings.ToLower(err.Error()), "device or resource busy"):
+						errorText.Text = "Input device is in use by another app. Close the other app and try again."
+					default:
 						errorText.Text = err.Error()
 					}
 					errorText.Refresh()
@@ -550,6 +586,8 @@ func runUI(baseCfg config) error {
 					return
 				}
 
+				errorText.Text = ""
+				errorText.Refresh()
 				if clicker, _, _ := getState(); clicker != nil {
 					setEnabledStateUI(clicker.IsEnabled())
 				}
@@ -587,6 +625,7 @@ func runUI(baseCfg config) error {
 		cfg.triggerCode = triggerCode
 		cfg.toggleCode = toggleCode
 		cfg.cps = minSlider.Value
+		cfg.jitter = int(math.Round(jitterSlider.Value))
 		return cfg, nil
 	}
 
@@ -600,6 +639,7 @@ func runUI(baseCfg config) error {
 		settings := uiSettings{
 			MinCPS:  minSlider.Value,
 			MaxCPS:  maxSlider.Value,
+			Jitter:  int(math.Round(jitterSlider.Value)),
 			Trigger: strings.TrimSpace(cfg.triggerRaw),
 			Toggle:  strings.TrimSpace(cfg.toggleRaw),
 			Enabled: enabled,
@@ -833,24 +873,30 @@ func runUI(baseCfg config) error {
 	accentLine := canvas.NewRectangle(color.NRGBA{R: 0xff, G: 0x66, B: 0x66, A: 0xff})
 	accentLine.SetMinSize(fyne.NewSize(220, 3))
 
+	newSliderControl := func(label string, value *widget.Label, slider *widget.Slider) fyne.CanvasObject {
+		title := widget.NewLabel(label)
+		title.TextStyle = fyne.TextStyle{Bold: true}
+		head := container.NewBorder(nil, nil, title, value, nil)
+		return container.NewVBox(head, slider)
+	}
+
 	rateControls := container.NewVBox(
-		minText,
-		minSlider,
-		maxText,
-		maxSlider,
+		newSliderControl("Min CPS", minValue, minSlider),
+		newSliderControl("Max CPS", maxValue, maxSlider),
+		newSliderControl("Jitter", jitterValue, jitterSlider),
 	)
 	keybindControls := widget.NewForm(
 		widget.NewFormItem("Trigger", triggerCaptureBtn),
 		widget.NewFormItem("Toggle", toggleCaptureBtn),
 	)
+	rateCard := widget.NewCard("Rate", "", rateControls)
+	keybindCard := widget.NewCard("Keybinds", "", keybindControls)
+	controlsRow := container.NewGridWithColumns(2, rateCard, keybindCard)
 
 	mainContent := container.NewVBox(
 		titleText,
 		accentLine,
-		rateControls,
-		widget.NewSeparator(),
-		keybindControls,
-		widget.NewSeparator(),
+		controlsRow,
 		currentCPSText,
 		errorText,
 		initProgress,

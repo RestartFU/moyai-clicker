@@ -121,12 +121,14 @@ func startWaylandClickerFromConfigWithRetry(cfg config, logger *slog.Logger, all
 	runtime, err := linuxinput.NewRuntime(
 		selection,
 		linuxinput.RuntimeConfig{
-			TriggerCode:  cfg.triggerCode,
-			ToggleCode:   cfg.toggleCode,
-			CPS:          cfg.cps,
-			ClickDown:    clickDown,
-			StartEnabled: cfg.startEnabled,
-			GrabDevices:  cfg.grabDevices,
+			TriggerCode:        cfg.triggerCode,
+			ToggleCode:         cfg.toggleCode,
+			CPS:                cfg.cps,
+			ClickDown:          clickDown,
+			JitterPixels:       cfg.jitter,
+			StartEnabled:       cfg.startEnabled,
+			GrabDevices:        cfg.grabDevices,
+			PassThroughTrigger: cfg.ui,
 		},
 		logger,
 	)
@@ -151,6 +153,7 @@ func startWaylandClickerFromConfigWithRetry(cfg config, logger *slog.Logger, all
 	logger.Info("Trigger", "name", formatCodeName(cfg.triggerCode), "code", cfg.triggerCode)
 	logger.Info("Toggle", "name", formatCodeName(cfg.toggleCode), "code", cfg.toggleCode)
 	logger.Info("Rate", "cps", cfg.cps)
+	logger.Info("Jitter", "pixels", cfg.jitter)
 	if runtime.GrabEnabled() {
 		logger.Info("Grab mode enabled")
 	} else {
@@ -183,6 +186,7 @@ func startX11ClickerFromConfig(cfg config, logger *slog.Logger) (clickerRuntime,
 			ToggleCode:   cfg.toggleCode,
 			CPS:          cfg.cps,
 			ClickDown:    clickDown,
+			JitterPixels: cfg.jitter,
 			StartEnabled: cfg.startEnabled,
 		},
 		logger,
@@ -200,6 +204,7 @@ func startX11ClickerFromConfig(cfg config, logger *slog.Logger) (clickerRuntime,
 	logger.Info("Trigger", "name", formatCodeName(cfg.triggerCode), "code", cfg.triggerCode)
 	logger.Info("Toggle", "name", formatCodeName(cfg.toggleCode), "code", cfg.toggleCode)
 	logger.Info("Rate", "cps", cfg.cps)
+	logger.Info("Jitter", "pixels", cfg.jitter)
 	if cfg.startEnabled {
 		logger.Info("Initial state enabled (press toggle to disable/enable)")
 	} else {

@@ -16,12 +16,14 @@ import (
 )
 
 type RuntimeConfig struct {
-	TriggerCode  uint16
-	ToggleCode   uint16
-	CPS          float64
-	ClickDown    time.Duration
-	StartEnabled bool
-	GrabDevices  bool
+	TriggerCode        uint16
+	ToggleCode         uint16
+	CPS                float64
+	ClickDown          time.Duration
+	JitterPixels       int
+	StartEnabled       bool
+	GrabDevices        bool
+	PassThroughTrigger bool
 }
 
 type Runtime struct {
@@ -121,15 +123,17 @@ func NewRuntime(selection *SourceSelection, cfg RuntimeConfig, logger autoclicke
 
 	service, err := autoclicker.NewService(
 		autoclicker.Config{
-			TriggerCode:    cfg.TriggerCode,
-			ToggleCode:     cfg.ToggleCode,
-			TriggerSources: selection.TriggerPaths,
-			ToggleSources:  selection.TogglePaths,
-			GrabSources:    grabPaths,
-			GrabEnabled:    grabEnabled,
-			CPS:            cfg.CPS,
-			ClickDown:      cfg.ClickDown,
-			StartEnabled:   cfg.StartEnabled,
+			TriggerCode:        cfg.TriggerCode,
+			ToggleCode:         cfg.ToggleCode,
+			TriggerSources:     selection.TriggerPaths,
+			ToggleSources:      selection.TogglePaths,
+			GrabSources:        grabPaths,
+			GrabEnabled:        grabEnabled,
+			PassThroughTrigger: cfg.PassThroughTrigger,
+			CPS:                cfg.CPS,
+			ClickDown:          cfg.ClickDown,
+			JitterPixels:       cfg.JitterPixels,
+			StartEnabled:       cfg.StartEnabled,
 		},
 		injector,
 		logger,
@@ -211,6 +215,10 @@ func (r *Runtime) IsEnabled() bool {
 
 func (r *Runtime) SetCPS(cps float64) error {
 	return r.service.SetCPS(cps)
+}
+
+func (r *Runtime) SetJitter(pixels int) error {
+	return r.service.SetJitter(pixels)
 }
 
 func (r *Runtime) SetTriggerCode(code uint16) {
@@ -340,7 +348,10 @@ func buildUinputCapabilities(
 	grabEnabled bool,
 ) map[evdev.EvType][]evdev.EvCode {
 	keyCodes := map[evdev.EvCode]struct{}{evdev.BTN_LEFT: {}}
-	relCodes := make(map[evdev.EvCode]struct{})
+	relCodes := map[evdev.EvCode]struct{}{
+		evdev.REL_X: {},
+		evdev.REL_Y: {},
+	}
 
 	if grabEnabled {
 		for _, dev := range sourceDevices {

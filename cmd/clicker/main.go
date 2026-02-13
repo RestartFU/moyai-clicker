@@ -24,6 +24,7 @@ type config struct {
 	devicePath   string
 	cps          float64
 	downMS       float64
+	jitter       int
 	startEnabled bool
 	listDevices  bool
 	grabDevices  bool
@@ -117,6 +118,7 @@ func parseConfig(args []string) (config, error) {
 	flags.StringVar(&cfg.devicePath, "device", "", "Input event device path to listen on, e.g. /dev/input/event4. Auto-detected if omitted.")
 	flags.Float64Var(&cfg.cps, "cps", 16.0, "Clicks per second while held.")
 	flags.Float64Var(&cfg.downMS, "down-ms", 10.0, "How long each synthetic click stays down in ms (default: 10).")
+	flags.IntVar(&cfg.jitter, "jitter", 0, "Maximum random cursor jitter offset in pixels per click (0 disables).")
 	flags.BoolVar(&cfg.listDevices, "list-devices", false, "Print available input devices and exit.")
 	flags.BoolVar(&cfg.grabDevices, "grab", false, "Grab source devices and suppress raw trigger events (recommended for BTN_LEFT on Wayland).")
 	flags.BoolVar(&noGrab, "no-grab", false, "Disable source device grabbing.")
@@ -132,6 +134,9 @@ func parseConfig(args []string) (config, error) {
 	}
 	if cfg.cps <= 0 {
 		return cfg, fmt.Errorf("--cps must be > 0")
+	}
+	if cfg.jitter < 0 {
+		return cfg, fmt.Errorf("--jitter must be >= 0")
 	}
 	if cfg.grabDevices && noGrab {
 		return cfg, fmt.Errorf("--grab and --no-grab are mutually exclusive")

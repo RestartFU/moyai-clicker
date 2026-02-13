@@ -79,6 +79,7 @@ func startClickerFromConfig(cfg config, logger *slog.Logger) (clickerRuntime, er
 			ToggleCode:   cfg.toggleCode,
 			CPS:          cfg.cps,
 			ClickDown:    clickDown,
+			JitterPixels: cfg.jitter,
 			StartEnabled: cfg.startEnabled,
 		},
 		logger,
@@ -95,6 +96,7 @@ func startClickerFromConfig(cfg config, logger *slog.Logger) (clickerRuntime, er
 	logger.Info("Trigger", "name", formatCodeName(cfg.triggerCode), "code", cfg.triggerCode)
 	logger.Info("Toggle", "name", formatCodeName(cfg.toggleCode), "code", cfg.toggleCode)
 	logger.Info("Rate", "cps", cfg.cps)
+	logger.Info("Jitter", "pixels", cfg.jitter)
 	logger.Info("Input mode", "mode", "windows-global-hooks")
 	if cfg.startEnabled {
 		logger.Info("Initial state enabled (press toggle to disable/enable)")

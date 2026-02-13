@@ -40,6 +40,7 @@ const (
 	llkhfLowerILInjected = 0x00000002
 
 	inputMouse           = 0
+	mouseeventfMove      = 0x0001
 	mouseeventfLeftDown  = 0x0002
 	mouseeventfLeftUp    = 0x0004
 	globalSourceIdentity = "windows-global"
@@ -116,29 +117,66 @@ type input struct {
 type windowsInjector struct{}
 
 func (i *windowsInjector) WriteEvents(events ...autoclicker.Event) error {
-	inputs := make([]input, 0, 2)
-	for _, event := range events {
-		if event.Type != autoclicker.EventTypeKey || event.Code != autoclicker.LeftButtonCode {
-			continue
-		}
+	inputs := make([]input, 0, len(events))
+	var moveX int32
+	var moveY int32
 
-		var flags uint32
-		switch event.Value {
-		case 1:
-			flags = mouseeventfLeftDown
-		case 0:
-			flags = mouseeventfLeftUp
-		default:
-			continue
+	flushMove := func() {
+		if moveX == 0 && moveY == 0 {
+			return
 		}
-
 		inputs = append(inputs, input{
 			Type: inputMouse,
 			Mi: mouseInput{
-				DwFlags: flags,
+				Dx:      moveX,
+				Dy:      moveY,
+				DwFlags: mouseeventfMove,
 			},
 		})
+		moveX = 0
+		moveY = 0
 	}
+
+	for _, event := range events {
+		switch event.Type {
+		case autoclicker.EventTypeRel:
+			switch event.Code {
+			case autoclicker.RelXCode:
+				moveX += event.Value
+			case autoclicker.RelYCode:
+				moveY += event.Value
+			}
+		case autoclicker.EventTypeSyn:
+			if event.Code == autoclicker.SynReportCode {
+				flushMove()
+			}
+		case autoclicker.EventTypeKey:
+			if event.Code != autoclicker.LeftButtonCode {
+				continue
+			}
+			flushMove()
+
+			var flags uint32
+			switch event.Value {
+			case 1:
+				flags = mouseeventfLeftDown
+			case 0:
+				flags = mouseeventfLeftUp
+			default:
+				continue
+			}
+
+			inputs = append(inputs, input{
+				Type: inputMouse,
+				Mi: mouseInput{
+					DwFlags: flags,
+				},
+			})
+		default:
+			continue
+		}
+	}
+	flushMove()
 
 	if len(inputs) == 0 {
 		return nil
@@ -192,6 +230,7 @@ func NewRuntime(cfg RuntimeConfig, logger autoclicker.Logger) (*Runtime, error) 
 			GrabEnabled:    false,
 			CPS:            cfg.CPS,
 			ClickDown:      cfg.ClickDown,
+			JitterPixels:   cfg.JitterPixels,
 			StartEnabled:   cfg.StartEnabled,
 		},
 		&windowsInjector{},
@@ -260,6 +299,10 @@ func (r *Runtime) IsEnabled() bool {
 
 func (r *Runtime) SetCPS(cps float64) error {
 	return r.service.SetCPS(cps)
+}
+
+func (r *Runtime) SetJitter(pixels int) error {
+	return r.service.SetJitter(pixels)
 }
 
 func (r *Runtime) SetTriggerCode(code uint16) {

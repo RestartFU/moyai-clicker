@@ -31,6 +31,10 @@ func (r *Runtime) SetCPS(cps float64) error {
 	return fmt.Errorf("windows input runtime is only available on Windows")
 }
 
+func (r *Runtime) SetJitter(pixels int) error {
+	return fmt.Errorf("windows input runtime is only available on Windows")
+}
+
 func (r *Runtime) SetTriggerCode(code uint16) {}
 
 func (r *Runtime) SetToggleCode(code uint16) {}

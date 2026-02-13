@@ -9,6 +9,8 @@ const (
 	EventTypeAbs uint16 = 0x03
 
 	SynReportCode  uint16 = 0
+	RelXCode       uint16 = 0x00
+	RelYCode       uint16 = 0x01
 	LeftButtonCode uint16 = 0x110
 )
 
@@ -19,15 +21,17 @@ type Event struct {
 }
 
 type Config struct {
-	TriggerCode    uint16
-	ToggleCode     uint16
-	TriggerSources map[string]struct{}
-	ToggleSources  map[string]struct{}
-	GrabSources    map[string]struct{}
-	GrabEnabled    bool
-	CPS            float64
-	ClickDown      time.Duration
-	StartEnabled   bool
+	TriggerCode        uint16
+	ToggleCode         uint16
+	TriggerSources     map[string]struct{}
+	ToggleSources      map[string]struct{}
+	GrabSources        map[string]struct{}
+	GrabEnabled        bool
+	PassThroughTrigger bool
+	CPS                float64
+	ClickDown          time.Duration
+	JitterPixels       int
+	StartEnabled       bool
 }
 
 type Injector interface {

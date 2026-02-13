@@ -10,6 +10,7 @@ import (
 type uiSettings struct {
 	MinCPS  float64 `json:"min_cps"`
 	MaxCPS  float64 `json:"max_cps"`
+	Jitter  int     `json:"jitter"`
 	Trigger string  `json:"trigger"`
 	Toggle  string  `json:"toggle"`
 	Enabled bool    `json:"enabled"`

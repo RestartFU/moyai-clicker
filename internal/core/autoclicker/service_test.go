@@ -274,3 +274,83 @@ func TestSetTriggerCodeSwitchesHandledTrigger(t *testing.T) {
 		t.Fatalf("new trigger code should activate holding")
 	}
 }
+
+func TestSetJitterRejectsNegative(t *testing.T) {
+	service, err := NewService(testConfig(true), &recordingInjector{}, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	if err := service.SetJitter(-1); err == nil {
+		t.Fatalf("expected error when setting negative jitter")
+	}
+	if err := service.SetJitter(3); err != nil {
+		t.Fatalf("SetJitter() error = %v", err)
+	}
+	if got := service.currentJitterPixels(); got != 3 {
+		t.Fatalf("currentJitterPixels() = %d, want 3", got)
+	}
+}
+
+func TestClickOnceEmitsAndRestoresJitterMotion(t *testing.T) {
+	cfg := testConfig(true)
+	cfg.CPS = 100
+	cfg.ClickDown = 0
+	cfg.JitterPixels = 3
+
+	injector := &recordingInjector{}
+	service, err := NewService(cfg, injector, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	for i := 0; i < 250; i++ {
+		if ok := service.clickOnce(); !ok {
+			t.Fatalf("clickOnce() returned false at iteration %d", i)
+		}
+	}
+
+	var (
+		relCount int
+		sumX     int32
+		sumY     int32
+	)
+	for _, event := range injector.snapshot() {
+		if event.Type != EventTypeRel {
+			continue
+		}
+		relCount++
+		switch event.Code {
+		case RelXCode:
+			sumX += event.Value
+		case RelYCode:
+			sumY += event.Value
+		}
+	}
+
+	if relCount == 0 {
+		t.Fatalf("expected jitter to emit relative movement events")
+	}
+	if sumX != 0 || sumY != 0 {
+		t.Fatalf("expected jitter movement to return to origin, got sumX=%d sumY=%d", sumX, sumY)
+	}
+}
+
+func TestGrabTriggerPassesThroughWhenConfigured(t *testing.T) {
+	cfg := testConfig(true)
+	cfg.GrabEnabled = true
+	cfg.GrabSources = map[string]struct{}{"device": {}}
+	cfg.PassThroughTrigger = true
+
+	injector := &recordingInjector{}
+	service, err := NewService(cfg, injector, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	service.handleEvent("device", Event{Type: EventTypeKey, Code: cfg.TriggerCode, Value: 1})
+	events := injector.snapshot()
+	if len(events) == 0 {
+		t.Fatalf("expected trigger down to be passed through when PassThroughTrigger is enabled")
+	}
+}

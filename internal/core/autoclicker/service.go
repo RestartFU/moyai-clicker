@@ -2,6 +2,7 @@ package autoclicker
 
 import (
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ type Service struct {
 	stateMu    sync.Mutex
 
 	intervalNanos  atomic.Int64
+	jitterPixels   atomic.Int64
 	triggerCode    atomic.Uint32
 	toggleCode     atomic.Uint32
 	clickCount     atomic.Int64
@@ -39,6 +41,9 @@ type Service struct {
 func NewService(cfg Config, injector Injector, logger Logger) (*Service, error) {
 	if cfg.CPS <= 0 {
 		return nil, fmt.Errorf("cps must be > 0")
+	}
+	if cfg.JitterPixels < 0 {
+		return nil, fmt.Errorf("jitter must be >= 0")
 	}
 	if len(cfg.TriggerSources) == 0 {
 		return nil, fmt.Errorf("no trigger-capable source devices configured")
@@ -60,6 +65,7 @@ func NewService(cfg Config, injector Injector, logger Logger) (*Service, error) 
 		stopCh:         make(chan struct{}),
 	}
 	service.intervalNanos.Store(time.Duration(float64(time.Second) / cfg.CPS).Nanoseconds())
+	service.jitterPixels.Store(int64(cfg.JitterPixels))
 	service.triggerCode.Store(uint32(cfg.TriggerCode))
 	service.toggleCode.Store(uint32(cfg.ToggleCode))
 	service.enabled.Store(cfg.StartEnabled)
@@ -97,6 +103,14 @@ func (s *Service) SetCPS(cps float64) error {
 		return fmt.Errorf("cps must be > 0")
 	}
 	s.intervalNanos.Store(time.Duration(float64(time.Second) / cps).Nanoseconds())
+	return nil
+}
+
+func (s *Service) SetJitter(pixels int) error {
+	if pixels < 0 {
+		return fmt.Errorf("jitter must be >= 0")
+	}
+	s.jitterPixels.Store(int64(pixels))
 	return nil
 }
 
@@ -196,8 +210,13 @@ func (s *Service) handleEvent(source string, event Event) {
 	}
 
 	if event.Type == EventTypeKey && event.Code == s.currentTriggerCode() && s.isTriggerSource(source) {
-		if !s.enabled.Load() && s.cfg.GrabEnabled && s.isGrabSource(source) {
-			s.passThroughEvent(event)
+		enabled := s.enabled.Load()
+		if s.cfg.GrabEnabled && s.isGrabSource(source) {
+			if !enabled || s.cfg.PassThroughTrigger {
+				s.passThroughEvent(event)
+			}
+		}
+		if !enabled {
 			return
 		}
 		s.handleTriggerEvent(source, event.Value)
@@ -261,6 +280,11 @@ func (s *Service) passThroughEvent(event Event) {
 }
 
 func (s *Service) clickOnce() bool {
+	jitterX, jitterY := s.randomJitterOffsets()
+	if (jitterX != 0 || jitterY != 0) && !s.emitJitterMove(jitterX, jitterY) {
+		return false
+	}
+
 	interval := s.currentInterval()
 	err := s.writeEvents(
 		Event{Type: EventTypeKey, Code: LeftButtonCode, Value: 1},
@@ -298,6 +322,10 @@ func (s *Service) clickOnce() bool {
 			return false
 		}
 		return true
+	}
+
+	if (jitterX != 0 || jitterY != 0) && !s.emitJitterMove(-jitterX, -jitterY) {
+		return false
 	}
 
 	s.clickCount.Add(1)
@@ -342,6 +370,14 @@ func (s *Service) currentInterval() time.Duration {
 		return time.Second
 	}
 	return time.Duration(ns)
+}
+
+func (s *Service) currentJitterPixels() int32 {
+	pixels := s.jitterPixels.Load()
+	if pixels <= 0 {
+		return 0
+	}
+	return int32(pixels)
 }
 
 func (s *Service) currentToggleCode() uint16 {
@@ -431,4 +467,40 @@ func (s *Service) releaseLeftButton() {
 	); err != nil {
 		s.logger.Warn("Failed to release left button", "err", err)
 	}
+}
+
+func (s *Service) randomJitterOffsets() (int32, int32) {
+	maxOffset := s.currentJitterPixels()
+	if maxOffset <= 0 {
+		return 0, 0
+	}
+
+	rangeSize := int(maxOffset*2 + 1)
+	dx := int32(rand.Intn(rangeSize)) - maxOffset
+	dy := int32(rand.Intn(rangeSize)) - maxOffset
+	return dx, dy
+}
+
+func (s *Service) emitJitterMove(dx, dy int32) bool {
+	events := make([]Event, 0, 3)
+	if dx != 0 {
+		events = append(events, Event{Type: EventTypeRel, Code: RelXCode, Value: dx})
+	}
+	if dy != 0 {
+		events = append(events, Event{Type: EventTypeRel, Code: RelYCode, Value: dy})
+	}
+	if len(events) == 0 {
+		return true
+	}
+	events = append(events, Event{Type: EventTypeSyn, Code: SynReportCode, Value: 0})
+	if err := s.writeEvents(events...); err != nil {
+		if s.stopped() {
+			return false
+		}
+		s.logger.Warn("Failed to emit jitter move", "dx", dx, "dy", dy, "err", err)
+		if !s.sleepWithStop(100 * time.Millisecond) {
+			return false
+		}
+	}
+	return true
 }

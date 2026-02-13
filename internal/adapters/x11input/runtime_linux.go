@@ -59,35 +59,97 @@ func (i *x11Injector) WriteEvents(events ...autoclicker.Event) error {
 	i.r.injectMu.Lock()
 	defer i.r.injectMu.Unlock()
 
-	for _, event := range events {
-		if event.Type != autoclicker.EventTypeKey || event.Code != autoclicker.LeftButtonCode {
-			continue
+	var (
+		moveX int32
+		moveY int32
+		dirty bool
+	)
+
+	flushMove := func() error {
+		if moveX == 0 && moveY == 0 {
+			return nil
 		}
 
-		var eventType byte
-		switch event.Value {
-		case 1:
-			eventType = xproto.ButtonPress
-		case 0:
-			eventType = xproto.ButtonRelease
-		default:
-			continue
+		query, err := xproto.QueryPointer(i.r.conn, i.r.rootWin).Reply()
+		if err != nil {
+			return err
 		}
-
-		if err := xtest.FakeInputChecked(
+		nextX := clampInt32ToInt16(int32(query.RootX) + moveX)
+		nextY := clampInt32ToInt16(int32(query.RootY) + moveY)
+		if err := xproto.WarpPointerChecked(
 			i.r.conn,
-			eventType,
-			byte(xproto.ButtonIndex1),
-			xproto.TimeCurrentTime,
+			xproto.WindowNone,
 			i.r.rootWin,
 			0,
 			0,
 			0,
+			0,
+			nextX,
+			nextY,
 		).Check(); err != nil {
 			return err
 		}
+		moveX = 0
+		moveY = 0
+		dirty = true
+		return nil
 	}
-	i.r.conn.Sync()
+
+	for _, event := range events {
+		switch event.Type {
+		case autoclicker.EventTypeRel:
+			switch event.Code {
+			case autoclicker.RelXCode:
+				moveX += event.Value
+			case autoclicker.RelYCode:
+				moveY += event.Value
+			}
+		case autoclicker.EventTypeSyn:
+			if event.Code == autoclicker.SynReportCode {
+				if err := flushMove(); err != nil {
+					return err
+				}
+			}
+		case autoclicker.EventTypeKey:
+			if event.Code != autoclicker.LeftButtonCode {
+				continue
+			}
+			if err := flushMove(); err != nil {
+				return err
+			}
+
+			var eventType byte
+			switch event.Value {
+			case 1:
+				eventType = xproto.ButtonPress
+			case 0:
+				eventType = xproto.ButtonRelease
+			default:
+				continue
+			}
+
+			if err := xtest.FakeInputChecked(
+				i.r.conn,
+				eventType,
+				byte(xproto.ButtonIndex1),
+				xproto.TimeCurrentTime,
+				i.r.rootWin,
+				0,
+				0,
+				0,
+			).Check(); err != nil {
+				return err
+			}
+			dirty = true
+		}
+	}
+
+	if err := flushMove(); err != nil {
+		return err
+	}
+	if dirty {
+		i.r.conn.Sync()
+	}
 	return nil
 }
 
@@ -134,6 +196,7 @@ func NewRuntime(cfg RuntimeConfig, logger autoclicker.Logger) (*Runtime, error) 
 			GrabEnabled:    false,
 			CPS:            cfg.CPS,
 			ClickDown:      cfg.ClickDown,
+			JitterPixels:   cfg.JitterPixels,
 			StartEnabled:   cfg.StartEnabled,
 		},
 		&x11Injector{r: r},
@@ -186,6 +249,10 @@ func (r *Runtime) IsEnabled() bool {
 
 func (r *Runtime) SetCPS(cps float64) error {
 	return r.service.SetCPS(cps)
+}
+
+func (r *Runtime) SetJitter(pixels int) error {
+	return r.service.SetJitter(pixels)
 }
 
 func (r *Runtime) SetTriggerCode(code uint16) {
@@ -792,4 +859,14 @@ func isDigits(value string) bool {
 		}
 	}
 	return true
+}
+
+func clampInt32ToInt16(value int32) int16 {
+	if value < -32768 {
+		return -32768
+	}
+	if value > 32767 {
+		return 32767
+	}
+	return int16(value)
 }
