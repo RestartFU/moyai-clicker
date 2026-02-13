@@ -21,6 +21,8 @@ type Service struct {
 	stateMu    sync.Mutex
 
 	intervalNanos  atomic.Int64
+	triggerCode    atomic.Uint32
+	toggleCode     atomic.Uint32
 	clickCount     atomic.Int64
 	enabled        atomic.Bool
 	holding        atomic.Bool
@@ -58,6 +60,8 @@ func NewService(cfg Config, injector Injector, logger Logger) (*Service, error) 
 		stopCh:         make(chan struct{}),
 	}
 	service.intervalNanos.Store(time.Duration(float64(time.Second) / cfg.CPS).Nanoseconds())
+	service.triggerCode.Store(uint32(cfg.TriggerCode))
+	service.toggleCode.Store(uint32(cfg.ToggleCode))
 	service.enabled.Store(cfg.StartEnabled)
 	return service, nil
 }
@@ -101,17 +105,35 @@ func (s *Service) SetEnabled(enabled bool) {
 	defer s.stateMu.Unlock()
 
 	if s.enabled.Load() == enabled {
+		// Defensive release in case button-up was missed.
+		if enabled {
+			s.releaseLeftButton()
+		}
 		return
 	}
 	s.enabled.Store(enabled)
+	s.holding.Store(false)
+	clear(s.pressedSources)
+	s.releaseLeftButton()
 	if !enabled {
-		s.holding.Store(false)
-		clear(s.pressedSources)
-		s.releaseLeftButton()
 		s.logger.Info("Autoclicker disabled")
 		return
 	}
 	s.logger.Info("Autoclicker enabled")
+}
+
+func (s *Service) SetToggleCode(code uint16) {
+	s.toggleCode.Store(uint32(code))
+}
+
+func (s *Service) SetTriggerCode(code uint16) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	s.triggerCode.Store(uint32(code))
+	s.holding.Store(false)
+	clear(s.pressedSources)
+	s.releaseLeftButton()
 }
 
 func (s *Service) IsEnabled() bool {
@@ -166,14 +188,14 @@ func (s *Service) eventLoop() {
 }
 
 func (s *Service) handleEvent(source string, event Event) {
-	if event.Type == EventTypeKey && event.Code == s.cfg.ToggleCode && s.isToggleSource(source) {
+	if event.Type == EventTypeKey && event.Code == s.currentToggleCode() && s.isKnownSource(source) {
 		if event.Value == 1 {
 			s.SetEnabled(!s.enabled.Load())
 		}
 		return
 	}
 
-	if event.Type == EventTypeKey && event.Code == s.cfg.TriggerCode && s.isTriggerSource(source) {
+	if event.Type == EventTypeKey && event.Code == s.currentTriggerCode() && s.isTriggerSource(source) {
 		if !s.enabled.Load() && s.cfg.GrabEnabled && s.isGrabSource(source) {
 			s.passThroughEvent(event)
 			return
@@ -218,7 +240,7 @@ func (s *Service) handleTriggerEvent(source string, value int32) {
 }
 
 func (s *Service) maybeNeutralizeLeftHold() {
-	if s.cfg.GrabEnabled || s.cfg.TriggerCode != LeftButtonCode {
+	if s.cfg.GrabEnabled || s.currentTriggerCode() != LeftButtonCode {
 		return
 	}
 	_ = s.writeEvents(
@@ -302,6 +324,13 @@ func (s *Service) isToggleSource(source string) bool {
 	return ok
 }
 
+func (s *Service) isKnownSource(source string) bool {
+	if s.isTriggerSource(source) {
+		return true
+	}
+	return s.isToggleSource(source)
+}
+
 func (s *Service) isGrabSource(source string) bool {
 	_, ok := s.cfg.GrabSources[source]
 	return ok
@@ -313,6 +342,14 @@ func (s *Service) currentInterval() time.Duration {
 		return time.Second
 	}
 	return time.Duration(ns)
+}
+
+func (s *Service) currentToggleCode() uint16 {
+	return uint16(s.toggleCode.Load())
+}
+
+func (s *Service) currentTriggerCode() uint16 {
+	return uint16(s.triggerCode.Load())
 }
 
 func (s *Service) stopped() bool {

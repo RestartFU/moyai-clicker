@@ -106,6 +106,10 @@ func parseTriggerCode(value string) (uint16, error) {
 	return linuxinput.ParseCode(value)
 }
 
+func captureNextCode(devicePath string, timeout time.Duration) (uint16, error) {
+	return linuxinput.CaptureNextKeyCode(devicePath, timeout)
+}
+
 func formatCodeName(code uint16) string {
 	return linuxinput.FormatCodeName(code)
 }

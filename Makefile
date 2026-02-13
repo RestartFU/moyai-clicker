@@ -25,6 +25,7 @@ build:
 install: build
 	mkdir -p $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 $(APP) $(DESTDIR)$(BINDIR)/$(APP)
+	    rm -rf $(APP)
 
 run:
 	$(GO) run $(CMD)

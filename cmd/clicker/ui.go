@@ -1,7 +1,9 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
+	"image/color"
 	"math"
 	"math/rand"
 	"os"
@@ -23,15 +25,225 @@ type clickerRuntime interface {
 	SetEnabled(enabled bool)
 	IsEnabled() bool
 	SetCPS(cps float64) error
+	SetTriggerCode(code uint16)
+	SetToggleCode(code uint16)
+	CaptureNextKeyCode(timeout time.Duration) (uint16, error)
 	Stop()
+}
+
+//go:embed assets/JetBrainsMonoNerdFont-Regular.ttf
+var jetBrainsMonoNerdFontRegular []byte
+
+type clickerTheme struct {
+	base fyne.Theme
+	font fyne.Resource
+}
+
+func newClickerTheme() fyne.Theme {
+	return &clickerTheme{
+		base: theme.DarkTheme(),
+		font: fyne.NewStaticResource("JetBrainsMonoNerdFont-Regular.ttf", jetBrainsMonoNerdFontRegular),
+	}
+}
+
+func (t *clickerTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNameBackground:
+		return color.NRGBA{R: 0x0d, G: 0x10, B: 0x14, A: 0xff}
+	case theme.ColorNameHeaderBackground:
+		return color.NRGBA{R: 0x12, G: 0x16, B: 0x1c, A: 0xff}
+	case theme.ColorNameButton:
+		return color.NRGBA{R: 0x1d, G: 0x23, B: 0x2c, A: 0xff}
+	case theme.ColorNameDisabledButton:
+		return color.NRGBA{R: 0x16, G: 0x1a, B: 0x20, A: 0xff}
+	case theme.ColorNameInputBackground:
+		return color.NRGBA{R: 0x13, G: 0x18, B: 0x1f, A: 0xff}
+	case theme.ColorNameInputBorder, theme.ColorNameSeparator:
+		return color.NRGBA{R: 0x2b, G: 0x33, B: 0x40, A: 0xff}
+	case theme.ColorNamePrimary, theme.ColorNameHyperlink:
+		return color.NRGBA{R: 0xff, G: 0x66, B: 0x66, A: 0xff}
+	case theme.ColorNameFocus:
+		return color.NRGBA{R: 0xff, G: 0x7a, B: 0x7a, A: 0x66}
+	case theme.ColorNameHover:
+		return color.NRGBA{R: 0xff, G: 0x7a, B: 0x7a, A: 0x22}
+	case theme.ColorNamePressed:
+		return color.NRGBA{R: 0xff, G: 0x7a, B: 0x7a, A: 0x40}
+	case theme.ColorNameSelection:
+		return color.NRGBA{R: 0xff, G: 0x66, B: 0x66, A: 0x44}
+	case theme.ColorNameForeground:
+		return color.NRGBA{R: 0xf2, G: 0xf4, B: 0xf8, A: 0xff}
+	case theme.ColorNamePlaceHolder:
+		return color.NRGBA{R: 0xa9, G: 0xb3, B: 0xc2, A: 0xff}
+	case theme.ColorNameError:
+		return color.NRGBA{R: 0xff, G: 0x82, B: 0x82, A: 0xff}
+	case theme.ColorNameWarning:
+		return color.NRGBA{R: 0xff, G: 0x9f, B: 0x5a, A: 0xff}
+	case theme.ColorNameSuccess:
+		return color.NRGBA{R: 0x7f, G: 0xd4, B: 0xa8, A: 0xff}
+	}
+	return t.base.Color(name, variant)
+}
+
+func (t *clickerTheme) Font(style fyne.TextStyle) fyne.Resource {
+	if t.font != nil {
+		return t.font
+	}
+	return t.base.Font(style)
+}
+
+func (t *clickerTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return t.base.Icon(name)
+}
+
+func (t *clickerTheme) Size(name fyne.ThemeSizeName) float32 {
+	switch name {
+	case theme.SizeNamePadding:
+		return 10
+	case theme.SizeNameInnerPadding:
+		return 10
+	case theme.SizeNameInputRadius:
+		return 8
+	}
+	return t.base.Size(name)
+}
+
+func normalizeCodeName(raw string, fallback string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		value = fallback
+	}
+	code, err := parseTriggerCode(value)
+	if err != nil {
+		return strings.ToUpper(value)
+	}
+	return formatCodeName(code)
+}
+
+func displayCodeName(raw string) string {
+	name := strings.ToUpper(strings.TrimSpace(raw))
+	if name == "" {
+		return "-"
+	}
+
+	switch name {
+	case "BTN_LEFT":
+		return "Mouse Left Button"
+	case "BTN_RIGHT":
+		return "Mouse Right Button"
+	case "BTN_MIDDLE":
+		return "Mouse Middle Button"
+	case "BTN_SIDE", "BTN_EXTRA":
+		return "Mouse Side Button"
+	case "BTN_FORWARD":
+		return "Mouse Forward Button"
+	case "BTN_BACK":
+		return "Mouse Back Button"
+	}
+
+	if strings.HasPrefix(name, "BTN_") {
+		return "Mouse " + humanizeInputToken(strings.TrimPrefix(name, "BTN_"))
+	}
+	if strings.HasPrefix(name, "KEY_") {
+		return "Keyboard " + humanizeInputToken(strings.TrimPrefix(name, "KEY_"))
+	}
+	return name
+}
+
+func humanizeInputToken(raw string) string {
+	parts := strings.Split(raw, "_")
+	words := make([]string, 0, len(parts)*2)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		words = append(words, humanizeInputWord(part)...)
+	}
+	if len(words) == 0 {
+		return raw
+	}
+	return strings.Join(words, " ")
+}
+
+func humanizeInputWord(raw string) []string {
+	token := strings.ToUpper(strings.TrimSpace(raw))
+	switch token {
+	case "ALT":
+		return []string{"Alt"}
+	case "CTRL":
+		return []string{"Ctrl"}
+	case "SHIFT":
+		return []string{"Shift"}
+	case "ESC":
+		return []string{"Esc"}
+	case "ENTER":
+		return []string{"Enter"}
+	case "SPACE":
+		return []string{"Space"}
+	case "TAB":
+		return []string{"Tab"}
+	case "CAPSLOCK":
+		return []string{"Caps", "Lock"}
+	case "PAGEUP":
+		return []string{"Page", "Up"}
+	case "PAGEDOWN":
+		return []string{"Page", "Down"}
+	case "BACKSPACE":
+		return []string{"Backspace"}
+	case "DELETE":
+		return []string{"Delete"}
+	case "INSERT":
+		return []string{"Insert"}
+	case "HOME":
+		return []string{"Home"}
+	case "END":
+		return []string{"End"}
+	case "UP":
+		return []string{"Up"}
+	case "DOWN":
+		return []string{"Down"}
+	case "LEFT":
+		return []string{"Left"}
+	case "RIGHT":
+		return []string{"Right"}
+	}
+
+	if strings.HasPrefix(token, "LEFT") && len(token) > len("LEFT") {
+		return append([]string{"Left"}, humanizeInputWord(token[len("LEFT"):])...)
+	}
+	if strings.HasPrefix(token, "RIGHT") && len(token) > len("RIGHT") {
+		return append([]string{"Right"}, humanizeInputWord(token[len("RIGHT"):])...)
+	}
+	if strings.HasPrefix(token, "KP") && len(token) > len("KP") {
+		return append([]string{"Keypad"}, humanizeInputWord(token[len("KP"):])...)
+	}
+	if strings.HasPrefix(token, "F") && len(token) > 1 && isDigits(token[1:]) {
+		return []string{token}
+	}
+	if len(token) == 1 {
+		return []string{token}
+	}
+	return []string{strings.ToUpper(token[:1]) + strings.ToLower(token[1:])}
+}
+
+func isDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func runUI(baseCfg config) error {
 	fApp := app.New()
-	fApp.Settings().SetTheme(theme.DarkTheme())
+	fApp.Settings().SetTheme(newClickerTheme())
 
 	window := fApp.NewWindow("Auto-Clicker")
-	window.Resize(fyne.NewSize(760, 620))
+	window.Resize(fyne.NewSize(760, 560))
 	window.CenterOnScreen()
 
 	clamp := func(v, min, max float64) float64 {
@@ -88,21 +300,23 @@ func runUI(baseCfg config) error {
 		}
 		startupEnabled = stored.Enabled
 	}
+	triggerRaw = normalizeCodeName(triggerRaw, "BTN_LEFT")
+	toggleRaw = normalizeCodeName(toggleRaw, "BTN_EXTRA")
 
 	minSlider := widget.NewSlider(1, 30)
-	minSlider.Step = 1
+	minSlider.Step = 0
 	minSlider.SetValue(minDefault)
 
 	maxSlider := widget.NewSlider(1, 30)
-	maxSlider.Step = 1
+	maxSlider.Step = 0
 	maxSlider.SetValue(maxDefault)
 
 	minText := canvas.NewText("", nil)
 	maxText := canvas.NewText("", nil)
 	updateMinMaxText := func() {
-		minText.Text = fmt.Sprintf("Min CPS: %.0f", minSlider.Value)
+		minText.Text = fmt.Sprintf("Min CPS: %.2f", minSlider.Value)
 		minText.Refresh()
-		maxText.Text = fmt.Sprintf("Max CPS: %.0f", maxSlider.Value)
+		maxText.Text = fmt.Sprintf("Max CPS: %.2f", maxSlider.Value)
 		maxText.Refresh()
 	}
 	updateMinMaxText()
@@ -124,26 +338,9 @@ func runUI(baseCfg config) error {
 		persistUISettings()
 	}
 
-	triggerEntry := widget.NewEntry()
-	triggerEntry.SetText(triggerRaw)
-	triggerEntry.SetPlaceHolder("BTN_LEFT")
+	triggerCaptureBtn := widget.NewButton(displayCodeName(triggerRaw), nil)
+	toggleCaptureBtn := widget.NewButton(displayCodeName(toggleRaw), nil)
 
-	toggleEntry := widget.NewEntry()
-	toggleEntry.SetText(toggleRaw)
-	toggleEntry.SetPlaceHolder("BTN_EXTRA")
-
-	keybindInfo := canvas.NewText("", nil)
-	setKeybindInfo := func(trigger, toggle string) {
-		keybindInfo.Text = fmt.Sprintf(
-			"Current Keybinds: trigger=%s, toggle=%s",
-			strings.ToUpper(strings.TrimSpace(trigger)),
-			strings.ToUpper(strings.TrimSpace(toggle)),
-		)
-		keybindInfo.Refresh()
-	}
-	setKeybindInfo(triggerRaw, toggleRaw)
-
-	statusText := canvas.NewText("Status: starting...", nil)
 	errorText := canvas.NewText("", nil)
 	errorText.Color = theme.Color(theme.ColorNameError)
 	if settingsLoadWarning != "" {
@@ -186,23 +383,19 @@ func runUI(baseCfg config) error {
 		appendLogLine("WARNING " + settingsLoadWarning)
 	}
 
-	startBtn := widget.NewButton("Start", nil)
-	stopBtn := widget.NewButton("Stop", nil)
-	applyKeybindBtn := widget.NewButton("Apply Keybinds", nil)
+	enableToggleBtn := widget.NewButton("Disabled", nil)
+	enableToggleBtn.Importance = widget.HighImportance
+	triggerCaptureBtn.Importance = widget.MediumImportance
+	toggleCaptureBtn.Importance = widget.MediumImportance
 	initProgress := widget.NewProgressBarInfinite()
 	initProgress.Hide()
 
 	setEnabledStateUI := func(enabled bool) {
 		if enabled {
-			statusText.Text = "Status: enabled"
-			startBtn.Disable()
-			stopBtn.Enable()
+			enableToggleBtn.SetText("Enabled")
 		} else {
-			statusText.Text = "Status: paused"
-			startBtn.Enable()
-			stopBtn.Disable()
+			enableToggleBtn.SetText("Disabled")
 		}
-		statusText.Refresh()
 	}
 
 	var stateMu sync.Mutex
@@ -223,17 +416,17 @@ func runUI(baseCfg config) error {
 		stateMu.Unlock()
 	}
 
-	setInitializingUI := func(v bool, text string) {
+	setCurrentCfg := func(cfg config) {
+		stateMu.Lock()
+		currentCfg = cfg
+		stateMu.Unlock()
+	}
+
+	setInitializingUI := func(v bool) {
 		if v {
-			startBtn.Disable()
-			stopBtn.Disable()
-			applyKeybindBtn.Disable()
 			initProgress.Show()
-			statusText.Text = text
-			statusText.Refresh()
 			return
 		}
-		applyKeybindBtn.Enable()
 		initProgress.Hide()
 	}
 
@@ -323,29 +516,13 @@ func runUI(baseCfg config) error {
 			errorText.Text = ""
 			errorText.Refresh()
 			setEnabledStateUI(clicker.IsEnabled())
-			setKeybindInfo(cfg.triggerRaw, cfg.toggleRaw)
+			triggerCaptureBtn.SetText(displayCodeName(cfg.triggerRaw))
+			toggleCaptureBtn.SetText(displayCodeName(cfg.toggleRaw))
 		})
 		return nil
 	}
 
-	restartRuntime := func(cfg config) error {
-		prevClicker, prevCfg, _ := getState()
-		prevEnabled := true
-		if prevClicker != nil {
-			prevEnabled = prevClicker.IsEnabled()
-		}
-		cfg.startEnabled = prevEnabled
-		prevCfg.startEnabled = prevEnabled
-
-		stopRuntime()
-		if err := startRuntime(cfg); err != nil {
-			_ = startRuntime(prevCfg)
-			return err
-		}
-		return nil
-	}
-
-	runRuntimeTaskAsync := func(initStatus string, onDone func() error) {
+	runRuntimeTaskAsync := func(onDone func() error) {
 		_, _, init := getState()
 		if init {
 			return
@@ -354,14 +531,14 @@ func runUI(baseCfg config) error {
 		fyne.Do(func() {
 			errorText.Text = ""
 			errorText.Refresh()
-			setInitializingUI(true, initStatus)
+			setInitializingUI(true)
 		})
 
 		go func() {
 			err := onDone()
 			fyne.Do(func() {
 				setInitializing(false)
-				setInitializingUI(false, "")
+				setInitializingUI(false)
 				if err != nil {
 					if isPermissionError(err) {
 						errorText.Text = "permission denied for /dev/input or /dev/uinput (run as root or set udev rules)"
@@ -370,36 +547,22 @@ func runUI(baseCfg config) error {
 					}
 					errorText.Refresh()
 					appendLogLine("ERROR " + errorText.Text)
-
-					clicker, _, _ := getState()
-					if clicker == nil {
-						startBtn.Disable()
-						stopBtn.Disable()
-						statusText.Text = "Status: initialization failed"
-						statusText.Refresh()
-					}
 					return
 				}
 
-				clicker, _, _ := getState()
-				if clicker == nil {
-					startBtn.Disable()
-					stopBtn.Disable()
-					statusText.Text = "Status: not initialized"
-					statusText.Refresh()
-					return
+				if clicker, _, _ := getState(); clicker != nil {
+					setEnabledStateUI(clicker.IsEnabled())
 				}
-				setEnabledStateUI(clicker.IsEnabled())
 				persistUISettings()
 			})
 		}()
 	}
 
 	buildCfgFromUI := func() (config, error) {
-		cfg := currentCfg
+		_, cfg, _ := getState()
 
-		trigger := strings.TrimSpace(triggerEntry.Text)
-		toggle := strings.TrimSpace(toggleEntry.Text)
+		trigger := strings.TrimSpace(cfg.triggerRaw)
+		toggle := strings.TrimSpace(cfg.toggleRaw)
 		if trigger == "" {
 			trigger = "BTN_LEFT"
 		}
@@ -428,7 +591,7 @@ func runUI(baseCfg config) error {
 	}
 
 	persistUISettings = func() {
-		clicker, _, _ := getState()
+		clicker, cfg, _ := getState()
 		enabled := startupEnabled
 		if clicker != nil {
 			enabled = clicker.IsEnabled()
@@ -437,8 +600,8 @@ func runUI(baseCfg config) error {
 		settings := uiSettings{
 			MinCPS:  minSlider.Value,
 			MaxCPS:  maxSlider.Value,
-			Trigger: strings.TrimSpace(triggerEntry.Text),
-			Toggle:  strings.TrimSpace(toggleEntry.Text),
+			Trigger: strings.TrimSpace(cfg.triggerRaw),
+			Toggle:  strings.TrimSpace(cfg.toggleRaw),
 			Enabled: enabled,
 		}
 
@@ -448,35 +611,22 @@ func runUI(baseCfg config) error {
 		}
 	}
 
-	startBtn.OnTapped = func() {
-		clicker, _, init := getState()
-		if init {
-			return
-		}
+	enableToggleBtn.OnTapped = func() {
+		clicker, _, _ := getState()
 		if clicker == nil {
 			return
 		}
-		clicker.SetEnabled(true)
-		setEnabledStateUI(true)
+		clicker.SetEnabled(!clicker.IsEnabled())
+		setEnabledStateUI(clicker.IsEnabled())
 		persistUISettings()
-		appendLogLine("INFO Enabled from UI")
 	}
 
-	stopBtn.OnTapped = func() {
-		clicker, _, init := getState()
-		if init {
-			return
-		}
+	triggerCaptureBtn.OnTapped = func() {
+		clicker, _, _ := getState()
 		if clicker == nil {
 			return
 		}
-		clicker.SetEnabled(false)
-		setEnabledStateUI(false)
-		persistUISettings()
-		appendLogLine("INFO Paused from UI")
-	}
 
-	applyKeybindBtn.OnTapped = func() {
 		cfg, err := buildCfgFromUI()
 		if err != nil {
 			errorText.Text = err.Error()
@@ -485,12 +635,132 @@ func runUI(baseCfg config) error {
 			return
 		}
 
-		appendLogLine("INFO Applying keybind changes")
-		runRuntimeTaskAsync("Status: applying keybinds...", func() error {
-			if err := restartRuntime(cfg); err != nil {
+		appendLogLine("INFO Waiting for trigger input")
+		runRuntimeTaskAsync(func() error {
+			prevClicker, prevCfg, _ := getState()
+			if prevClicker == nil {
+				return fmt.Errorf("runtime is not initialized")
+			}
+			prevEnabled := prevClicker.IsEnabled()
+			prevCfg.startEnabled = prevEnabled
+
+			prevTriggerRaw := prevCfg.triggerRaw
+			capturedFromRuntime := true
+			code, err := prevClicker.CaptureNextKeyCode(2 * time.Second)
+			if err != nil {
+				capturedFromRuntime = false
+				stopRuntime()
+				code, err = captureNextCode("", 10*time.Second)
+				if err != nil {
+					_ = startRuntime(prevCfg)
+					return err
+				}
+			}
+			if code == cfg.toggleCode {
+				if !capturedFromRuntime {
+					_ = startRuntime(prevCfg)
+				}
+				return fmt.Errorf("captured trigger %s matches toggle; choose a different key/button", formatCodeName(code))
+			}
+
+			cfg.triggerCode = code
+			cfg.triggerRaw = formatCodeName(code)
+			cfg.startEnabled = prevEnabled
+
+			fyne.DoAndWait(func() {
+				triggerCaptureBtn.SetText(displayCodeName(cfg.triggerRaw))
+			})
+
+			if capturedFromRuntime {
+				prevClicker.SetTriggerCode(code)
+				setCurrentCfg(cfg)
+				appendLogLine("INFO Captured trigger " + cfg.triggerRaw)
+				return nil
+			}
+
+			stopRuntime()
+			if err := startRuntime(cfg); err != nil {
+				_ = startRuntime(prevCfg)
+				fyne.DoAndWait(func() {
+					triggerCaptureBtn.SetText(displayCodeName(prevTriggerRaw))
+				})
 				return err
 			}
-			appendLogLine("INFO Keybind changes applied")
+
+			appendLogLine("INFO Captured trigger " + cfg.triggerRaw)
+			return nil
+		})
+	}
+
+	toggleCaptureBtn.OnTapped = func() {
+		clicker, _, _ := getState()
+		if clicker == nil {
+			return
+		}
+
+		cfg, err := buildCfgFromUI()
+		if err != nil {
+			errorText.Text = err.Error()
+			errorText.Refresh()
+			appendLogLine("ERROR " + err.Error())
+			return
+		}
+
+		appendLogLine("INFO Waiting for toggle input")
+		runRuntimeTaskAsync(func() error {
+			prevClicker, prevCfg, _ := getState()
+			if prevClicker == nil {
+				return fmt.Errorf("runtime is not initialized")
+			}
+			prevEnabled := prevClicker.IsEnabled()
+			prevCfg.startEnabled = prevEnabled
+
+			prevToggleRaw := prevCfg.toggleRaw
+			capturedFromRuntime := true
+			code, err := prevClicker.CaptureNextKeyCode(2 * time.Second)
+			if err != nil {
+				capturedFromRuntime = false
+				// Fallback to global capture when runtime source set does not see desired key/button.
+				stopRuntime()
+				code, err = captureNextCode("", 10*time.Second)
+				if err != nil {
+					_ = startRuntime(prevCfg)
+					return err
+				}
+			}
+			if code == cfg.triggerCode {
+				if !capturedFromRuntime {
+					_ = startRuntime(prevCfg)
+				}
+				return fmt.Errorf("captured toggle %s matches trigger; choose a different key/button", formatCodeName(code))
+			}
+
+			cfg.toggleCode = code
+			cfg.toggleRaw = formatCodeName(code)
+			cfg.startEnabled = prevEnabled
+
+			fyne.DoAndWait(func() {
+				toggleCaptureBtn.SetText(displayCodeName(cfg.toggleRaw))
+			})
+
+			// Fast path: capture from live runtime stream, update toggle in-place.
+			if capturedFromRuntime {
+				prevClicker.SetToggleCode(code)
+				setCurrentCfg(cfg)
+				appendLogLine("INFO Captured toggle " + cfg.toggleRaw)
+				return nil
+			}
+
+			stopRuntime()
+			if err := startRuntime(cfg); err != nil {
+				_ = startRuntime(prevCfg)
+				fyne.DoAndWait(func() {
+					toggleCaptureBtn.SetText(displayCodeName(prevToggleRaw))
+				})
+				return err
+			}
+
+			appendLogLine("INFO Captured toggle " + cfg.toggleRaw)
 			return nil
 		})
 	}
@@ -556,38 +826,49 @@ func runUI(baseCfg config) error {
 		window.Close()
 	})
 
-	content := container.NewVBox(
+	titleText := canvas.NewText("🗿 CLICKER", color.NRGBA{R: 0xff, G: 0x75, B: 0x75, A: 0xff})
+	titleText.TextStyle = fyne.TextStyle{Bold: true}
+	titleText.TextSize = 30
+
+	accentLine := canvas.NewRectangle(color.NRGBA{R: 0xff, G: 0x66, B: 0x66, A: 0xff})
+	accentLine.SetMinSize(fyne.NewSize(220, 3))
+
+	rateControls := container.NewVBox(
 		minText,
 		minSlider,
 		maxText,
 		maxSlider,
-		widget.NewSeparator(),
-		widget.NewLabel("Keybinds"),
-		widget.NewForm(
-			widget.NewFormItem("Trigger", triggerEntry),
-			widget.NewFormItem("Toggle", toggleEntry),
-		),
-		applyKeybindBtn,
-		keybindInfo,
-		widget.NewSeparator(),
-		container.NewGridWithColumns(2, startBtn, stopBtn),
-		currentCPSText,
-		statusText,
-		errorText,
+	)
+	keybindControls := widget.NewForm(
+		widget.NewFormItem("Trigger", triggerCaptureBtn),
+		widget.NewFormItem("Toggle", toggleCaptureBtn),
 	)
 
-	controlsCard := widget.NewCard("Controls", "", content)
-	var rootContent fyne.CanvasObject = controlsCard
+	mainContent := container.NewVBox(
+		titleText,
+		accentLine,
+		rateControls,
+		widget.NewSeparator(),
+		keybindControls,
+		widget.NewSeparator(),
+		currentCPSText,
+		errorText,
+		initProgress,
+		enableToggleBtn,
+	)
+	mainPanel := container.NewPadded(mainContent)
+
+	var rootContent fyne.CanvasObject = mainPanel
 	if debugLogs {
 		logsCard := widget.NewCard("Logs", "", logScroll)
-		split := container.NewVSplit(controlsCard, logsCard)
-		split.SetOffset(0.45)
+		split := container.NewVSplit(mainPanel, logsCard)
+		split.SetOffset(0.68)
 		rootContent = split
 	}
 
-	setInitializingUI(true, "Status: initializing...")
+	setInitializingUI(true)
 	appendLogLine("INFO Initializing input devices...")
-	runRuntimeTaskAsync("Status: initializing...", func() error {
+	runRuntimeTaskAsync(func() error {
 		if err := startRuntime(startupCfg); err != nil {
 			return err
 		}

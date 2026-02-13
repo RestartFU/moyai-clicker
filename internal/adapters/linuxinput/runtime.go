@@ -32,6 +32,9 @@ type Runtime struct {
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 	readersWG sync.WaitGroup
+
+	captureMu sync.Mutex
+	captureCh chan uint16
 }
 
 type evdevInjector struct {
@@ -208,8 +211,52 @@ func (r *Runtime) SetCPS(cps float64) error {
 	return r.service.SetCPS(cps)
 }
 
+func (r *Runtime) SetTriggerCode(code uint16) {
+	r.service.SetTriggerCode(code)
+}
+
+func (r *Runtime) SetToggleCode(code uint16) {
+	r.service.SetToggleCode(code)
+}
+
 func (r *Runtime) GrabEnabled() bool {
 	return r.grabEnabled
+}
+
+func (r *Runtime) CaptureNextKeyCode(timeout time.Duration) (uint16, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+
+	waitCh := make(chan uint16, 1)
+
+	r.captureMu.Lock()
+	if r.captureCh != nil {
+		r.captureMu.Unlock()
+		return 0, fmt.Errorf("key capture already in progress")
+	}
+	r.captureCh = waitCh
+	r.captureMu.Unlock()
+
+	defer func() {
+		r.captureMu.Lock()
+		if r.captureCh == waitCh {
+			r.captureCh = nil
+		}
+		r.captureMu.Unlock()
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case code := <-waitCh:
+		return code, nil
+	case <-r.stopCh:
+		return 0, fmt.Errorf("runtime stopped")
+	case <-timer.C:
+		return 0, fmt.Errorf("timed out waiting for key/button input")
+	}
 }
 
 func (r *Runtime) readLoop(dev *evdev.InputDevice) {
@@ -236,6 +283,9 @@ func (r *Runtime) readLoop(dev *evdev.InputDevice) {
 		}
 
 		for _, event := range events {
+			if event.Type == evdev.EV_KEY && event.Value == 1 {
+				r.publishCapturedCode(uint16(event.Code))
+			}
 			if !r.service.SubmitEvent(path, autoclicker.Event{
 				Type:  uint16(event.Type),
 				Code:  uint16(event.Code),
@@ -244,6 +294,19 @@ func (r *Runtime) readLoop(dev *evdev.InputDevice) {
 				return
 			}
 		}
+	}
+}
+
+func (r *Runtime) publishCapturedCode(code uint16) {
+	r.captureMu.Lock()
+	ch := r.captureCh
+	r.captureMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- code:
+	default:
 	}
 }
 

@@ -100,6 +100,31 @@ func TestSetEnabledFalseReleasesLeftButton(t *testing.T) {
 	assertReleaseSuffix(t, injector.snapshot())
 }
 
+func TestSetEnabledTrueReleasesStaleLeftButton(t *testing.T) {
+	injector := &recordingInjector{}
+	service, err := NewService(testConfig(false), injector, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	if err := service.writeEvents(
+		Event{Type: EventTypeKey, Code: LeftButtonCode, Value: 1},
+		Event{Type: EventTypeSyn, Code: SynReportCode, Value: 0},
+	); err != nil {
+		t.Fatalf("writeEvents() error = %v", err)
+	}
+	if !service.leftButtonDown.Load() {
+		t.Fatalf("expected left button to be tracked as down")
+	}
+
+	service.SetEnabled(true)
+
+	if service.leftButtonDown.Load() {
+		t.Fatalf("expected left button to be tracked as up after enabling")
+	}
+	assertReleaseSuffix(t, injector.snapshot())
+}
+
 func TestStopReleasesLeftButtonBeforeClosingInjector(t *testing.T) {
 	injector := &recordingInjector{}
 	service, err := NewService(testConfig(true), injector, noopLogger{})
@@ -188,5 +213,64 @@ func TestWaitWithWakeReturnsOnSignal(t *testing.T) {
 		}
 	case <-time.After(300 * time.Millisecond):
 		t.Fatalf("timeout waiting for wake")
+	}
+}
+
+func TestSetToggleCodeAppliesToKnownSources(t *testing.T) {
+	cfg := testConfig(true)
+	cfg.TriggerCode = LeftButtonCode + 2
+	cfg.ToggleCode = cfg.TriggerCode + 1
+	cfg.TriggerSources = map[string]struct{}{"trigger-device": {}}
+	cfg.ToggleSources = map[string]struct{}{"toggle-device": {}}
+
+	service, err := NewService(cfg, &recordingInjector{}, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	newToggle := cfg.ToggleCode + 5
+
+	service.handleEvent("trigger-device", Event{Type: EventTypeKey, Code: newToggle, Value: 1})
+	if !service.IsEnabled() {
+		t.Fatalf("unexpected toggle before SetToggleCode")
+	}
+
+	service.SetToggleCode(newToggle)
+
+	service.handleEvent("trigger-device", Event{Type: EventTypeKey, Code: newToggle, Value: 1})
+	if service.IsEnabled() {
+		t.Fatalf("expected toggle after SetToggleCode on known source")
+	}
+}
+
+func TestSetTriggerCodeSwitchesHandledTrigger(t *testing.T) {
+	cfg := testConfig(true)
+	cfg.TriggerCode = LeftButtonCode + 2
+	cfg.ToggleCode = cfg.TriggerCode + 1
+
+	service, err := NewService(cfg, &recordingInjector{}, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	service.handleEvent("device", Event{Type: EventTypeKey, Code: cfg.TriggerCode, Value: 1})
+	if !service.holding.Load() {
+		t.Fatalf("expected holding after initial trigger press")
+	}
+
+	newTrigger := cfg.TriggerCode + 5
+	service.SetTriggerCode(newTrigger)
+	if service.holding.Load() {
+		t.Fatalf("expected holding cleared after SetTriggerCode")
+	}
+
+	service.handleEvent("device", Event{Type: EventTypeKey, Code: cfg.TriggerCode, Value: 1})
+	if service.holding.Load() {
+		t.Fatalf("old trigger code should no longer activate holding")
+	}
+
+	service.handleEvent("device", Event{Type: EventTypeKey, Code: newTrigger, Value: 1})
+	if !service.holding.Load() {
+		t.Fatalf("new trigger code should activate holding")
 	}
 }
